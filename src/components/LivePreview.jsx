@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 function Block({ b }) {
   const style = {
@@ -45,31 +45,51 @@ function Page({ number, layout }) {
   )
 }
 
-export default function LivePreview({ projectId }) {
-  const baseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
-  const [events, setEvents] = useState([])
+export default function LivePreview({ projectId, baseUrl }) {
+  // Prefer provided baseUrl to avoid guessing again
+  const backend = baseUrl || (import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000')
   const [pages, setPages] = useState({})
   const [status, setStatus] = useState('ready')
 
   useEffect(() => {
     if (!projectId) return
 
-    const ws = new WebSocket(baseUrl.replace('http', 'ws') + `/ws/projects/${projectId}`)
+    // Build WS URL robustly
+    let wsUrl
+    try {
+      const u = new URL(backend)
+      u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
+      u.pathname = `/ws/projects/${projectId}`
+      wsUrl = u.toString()
+    } catch {
+      wsUrl = backend.replace('http', 'ws') + `/ws/projects/${projectId}`
+    }
 
+    const ws = new WebSocket(wsUrl)
+
+    ws.onopen = () => setStatus('Verbunden — Generierung gestartet…')
     ws.onmessage = (msg) => {
-      const data = JSON.parse(msg.data)
-      setEvents((prev) => [...prev, data])
-      if (data.type === 'status') setStatus(`${data.stage}: ${data.message}`)
-      if (data.type === 'outline') setStatus('Layout wird generiert...')
-      if (data.type === 'page') {
-        setPages((prev) => ({ ...prev, [data.page]: data.layout }))
+      try {
+        const data = JSON.parse(msg.data)
+        if (data.type === 'status') setStatus(`${data.stage}: ${data.message}`)
+        if (data.type === 'outline') setStatus('Layout wird generiert...')
+        if (data.type === 'page') {
+          setPages((prev) => ({ ...prev, [data.page]: data.layout }))
+        }
+        if (data.type === 'complete') setStatus('Fertig!')
+        if (data.type === 'error') setStatus('Fehler: ' + (data.message || 'Unbekannt'))
+      } catch (e) {
+        // ignore malformed events
       }
-      if (data.type === 'complete') setStatus('Fertig!')
     }
     ws.onerror = () => setStatus('Fehler in der Verbindung')
+    ws.onclose = () => {
+      // Only mark as error if not completed
+      setStatus((s) => (s.includes('Fertig') ? s : 'Verbindung geschlossen'))
+    }
 
     return () => ws.close()
-  }, [projectId])
+  }, [projectId, backend])
 
   const ordered = Object.keys(pages).sort((a,b)=>Number(a)-Number(b))
 
